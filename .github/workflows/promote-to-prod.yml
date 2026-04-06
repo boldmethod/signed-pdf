@@ -1,0 +1,154 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA of the image to promote (must be built and tested on dev)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      image: ${{ steps.check.outputs.image }}
+    steps:
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify image exists in ECR
+        id: check
+        env:
+          ECR_REGISTRY: ${{ vars.AWS_ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.commit_sha }}"
+          echo "Checking for image: $IMAGE"
+
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="${{ inputs.commit_sha }}" \
+            --region "$AWS_REGION" > /dev/null
+
+          echo "Image verified: $IMAGE"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-24.04-arm
+    environment: production
+    outputs:
+      revision: ${{ steps.register.outputs.revision }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build and Register Task Definition
+        id: register
+        env:
+          TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        run: |
+          IMAGE="${{ needs.validate.outputs.image }}"
+          ENV_FILE="infrastructure/ecs/signed-pdf.env.prod.json"
+
+          echo "Image: $IMAGE"
+          echo "Env file: $ENV_FILE"
+
+          jq --arg IMAGE "$IMAGE" \
+             --arg SHA "${{ inputs.commit_sha }}" \
+             --arg IMG "$IMAGE" \
+             --slurpfile envfile "$ENV_FILE" \
+             '
+              ($envfile[0].LOG_GROUP) as $LOG_GROUP |
+              ($envfile[0] | to_entries | map(select(.key != "LOG_GROUP"))
+                | . + [{"key":"APP_GIT_SHA","value":$SHA},{"key":"APP_IMAGE_REF","value":$IMG}]
+                | map({name:.key, value:.value})) as $ENV |
+              .containerDefinitions[0].image = $IMAGE
+              | .containerDefinitions[0].environment = $ENV
+              | .containerDefinitions[0].logConfiguration.options."awslogs-group" = $LOG_GROUP
+             ' infrastructure/ecs/signed-pdf.taskdef.json > new-task-def.json
+
+          aws ecs register-task-definition --cli-input-json file://new-task-def.json
+
+          REVISION=$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY" \
+            --query "taskDefinition.revision" --output text)
+          echo "New task revision: $REVISION"
+
+          ACTUAL_IMAGE=$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY:$REVISION" \
+            --query "taskDefinition.containerDefinitions[0].image" --output text)
+          if [[ "$ACTUAL_IMAGE" != "$IMAGE" ]]; then
+            echo "::error::Task definition image mismatch. Expected: $IMAGE, Actual: $ACTUAL_IMAGE"
+            exit 1
+          fi
+
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Production ECS
+        env:
+          TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        run: |
+          CLUSTER="${{ vars.ECS_CLUSTER_PROD }}"
+          SERVICE="${{ vars.ECS_SERVICE_PROD }}"
+          REVISION="${{ steps.register.outputs.revision }}"
+
+          echo "Deploying $TASK_FAMILY:$REVISION to $CLUSTER / $SERVICE"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --region "$AWS_REGION" \
+            --task-definition "$TASK_FAMILY:$REVISION"
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "$AWS_REGION"
+
+  tag:
+    needs: [validate, deploy]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute next tag and create
+        env:
+          TAG_PREFIX: ${{ vars.PROD_TAG_PREFIX }}
+        run: |
+          REVISION="${{ needs.deploy.outputs.revision }}"
+
+          LAST_NUM=$(git tag -l "${TAG_PREFIX}-*" | sed "s/${TAG_PREFIX}-//" | sed 's/-.*//' | sort -n | tail -1)
+          if [[ -z "$LAST_NUM" ]]; then
+            NEXT_NUM=1
+          else
+            NEXT_NUM=$((LAST_NUM + 1))
+          fi
+
+          TAG="${TAG_PREFIX}-${NEXT_NUM}-rev${REVISION}"
+          echo "Tagging ${{ inputs.commit_sha }} as $TAG"
+
+          git tag "$TAG" "${{ inputs.commit_sha }}"
+          git push origin "$TAG"
+
+          echo "### Production Release" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** \`$TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ inputs.commit_sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`${{ needs.validate.outputs.image }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Task Revision:** \`$REVISION\`" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,33 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+*.nupkg
+project.lock.json
+*.nuget.props
+*.nuget.targets
+
+## IDE
+.vs/
+.vscode/
+*.swp
+*~
+.idea/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Build
+out/
+publish/
+artifacts/
+TestResults/
+
+## Secrets
+appsettings.*.local.json

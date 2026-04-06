@@ -1,0 +1,125 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - development
+    paths:
+      - "src/SignedPdf/**"
+      - "infrastructure/ecs/**"
+      - ".github/workflows/deploy-to-ecs.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Restore Dependencies
+        run: dotnet restore ./src/SignedPdf/SignedPdf.csproj
+
+      - name: Publish .NET Application to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ vars.AWS_ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          dotnet publish ./src/SignedPdf/SignedPdf.csproj -c Release \
+            -r linux-arm64 --self-contained false \
+            -p:PublishProfile=DefaultContainer \
+            -p:ContainerRepository=$ECR_REGISTRY/$ECR_REPOSITORY \
+            -p:ContainerImageTag=$GITHUB_SHA
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04-arm
+    environment: development
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set Deployment Target
+        run: |
+          echo "ECS_CLUSTER=${{ vars.ECS_CLUSTER_DEV }}" >> $GITHUB_ENV
+          echo "ECS_SERVICE=${{ vars.ECS_SERVICE_DEV }}" >> $GITHUB_ENV
+          echo "ENV_FILE=infrastructure/ecs/signed-pdf.env.dev.json" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build and Register Task Definition
+        env:
+          ECR_REGISTRY: ${{ vars.AWS_ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          echo "Image: $IMAGE"
+          echo "Env file: $ENV_FILE"
+
+          jq --arg IMAGE "$IMAGE" \
+             --arg SHA "$GITHUB_SHA" \
+             --arg IMG "$IMAGE" \
+             --slurpfile envfile "$ENV_FILE" \
+             '
+              ($envfile[0].LOG_GROUP) as $LOG_GROUP |
+              ($envfile[0] | to_entries | map(select(.key != "LOG_GROUP"))
+                | . + [{"key":"APP_GIT_SHA","value":$SHA},{"key":"APP_IMAGE_REF","value":$IMG}]
+                | map({name:.key, value:.value})) as $ENV |
+              .containerDefinitions[0].image = $IMAGE
+              | .containerDefinitions[0].environment = $ENV
+              | .containerDefinitions[0].logConfiguration.options."awslogs-group" = $LOG_GROUP
+             ' infrastructure/ecs/signed-pdf.taskdef.json > new-task-def.json
+
+          aws ecs register-task-definition --cli-input-json file://new-task-def.json
+
+          REVISION=$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY" \
+            --query "taskDefinition.revision" --output text)
+          echo "New task revision: $REVISION"
+
+          ACTUAL_IMAGE=$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY:$REVISION" \
+            --query "taskDefinition.containerDefinitions[0].image" --output text)
+          if [[ "$ACTUAL_IMAGE" != "$IMAGE" ]]; then
+            echo "::error::Task definition image mismatch. Expected: $IMAGE, Actual: $ACTUAL_IMAGE"
+            exit 1
+          fi
+
+          echo "revision=$REVISION" >> $GITHUB_ENV
+
+      - name: Deploy to ECS
+        env:
+          TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --region "$AWS_REGION" \
+            --task-definition "$TASK_FAMILY:${{ env.revision }}"
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --region "$AWS_REGION"
