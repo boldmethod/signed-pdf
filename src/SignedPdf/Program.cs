@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Amazon;
 using Amazon.S3;
 using SignedPdf.Configuration;
@@ -5,6 +6,11 @@ using SignedPdf.Models;
 using SignedPdf.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks();

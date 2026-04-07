@@ -3,9 +3,6 @@ using iText.IO.Image;
 using iText.Kernel.Font;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Canvas;
-using iText.Layout;
-using iText.Layout.Element;
-using iText.Layout.Properties;
 using SignedPdf.Models;
 
 namespace SignedPdf.Services;
@@ -18,36 +15,42 @@ public sealed class ITextRenderer : IPdfRenderer
         using var outputStream = new MemoryStream();
         using var reader = new PdfReader(inputStream);
         using var writer = new PdfWriter(outputStream);
-        using var pdfDoc = new PdfDocument(reader, writer);
+        var pdfDoc = new PdfDocument(reader, writer);
 
-        foreach (var overlay in overlays)
+        try
         {
-            if (overlay.PageNumber < 1 || overlay.PageNumber > pdfDoc.GetNumberOfPages())
-                throw new ArgumentException($"Page {overlay.PageNumber} is out of range (1-{pdfDoc.GetNumberOfPages()}).");
-
-            var page = pdfDoc.GetPage(overlay.PageNumber);
-            var canvas = new PdfCanvas(page);
-
-            switch (overlay.Type)
+            foreach (var overlay in overlays)
             {
-                case OverlayType.SignatureImage:
-                    RenderImage(canvas, overlay);
-                    break;
+                if (overlay.PageNumber < 1 || overlay.PageNumber > pdfDoc.GetNumberOfPages())
+                    throw new ArgumentException($"Page {overlay.PageNumber} is out of range (1-{pdfDoc.GetNumberOfPages()}).");
 
-                case OverlayType.Text:
-                    RenderText(pdfDoc, overlay, overlay.Text!);
-                    break;
+                var page = pdfDoc.GetPage(overlay.PageNumber);
+                var canvas = new PdfCanvas(page);
 
-                case OverlayType.DateStamp:
-                    var dateText = DateTime.UtcNow.ToString(overlay.Text ?? "MM/dd/yyyy");
-                    RenderText(pdfDoc, overlay, dateText);
-                    break;
+                switch (overlay.Type)
+                {
+                    case OverlayType.SignatureImage:
+                        RenderImage(canvas, overlay);
+                        break;
+
+                    case OverlayType.Text:
+                        RenderText(canvas, overlay, overlay.Text!);
+                        break;
+
+                    case OverlayType.DateStamp:
+                        var dateText = DateTime.UtcNow.ToString(overlay.Text ?? "MM/dd/yyyy");
+                        RenderText(canvas, overlay, dateText);
+                        break;
+                }
+
+                canvas.Release();
             }
-
-            canvas.Release();
+        }
+        finally
+        {
+            pdfDoc.Close();
         }
 
-        pdfDoc.Close();
         return outputStream.ToArray();
     }
 
@@ -66,20 +69,16 @@ public sealed class ITextRenderer : IPdfRenderer
             false);
     }
 
-    private static void RenderText(PdfDocument pdfDoc, SignatureOverlay overlay, string text)
+    private static void RenderText(PdfCanvas canvas, SignatureOverlay overlay, string text)
     {
         var fontFamily = overlay.FontFamily ?? StandardFonts.HELVETICA;
         var fontSize = (float)(overlay.FontSize ?? 12);
         var font = PdfFontFactory.CreateFont(fontFamily);
 
-        using var document = new Document(pdfDoc);
-        document.ShowTextAligned(
-            new Paragraph(text).SetFont(font).SetFontSize(fontSize),
-            (float)overlay.X,
-            (float)overlay.Y,
-            overlay.PageNumber,
-            TextAlignment.LEFT,
-            VerticalAlignment.BOTTOM,
-            0);
+        canvas.BeginText()
+            .SetFontAndSize(font, fontSize)
+            .MoveText(overlay.X, overlay.Y)
+            .ShowText(text)
+            .EndText();
     }
 }

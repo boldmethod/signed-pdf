@@ -1,7 +1,7 @@
 {
   "family": "Signed-PDF",
-  "taskRoleArn": "PLACEHOLDER",
-  "executionRoleArn": "PLACEHOLDER",
+  "taskRoleArn": "arn:aws:iam::976869938811:role/signedpdf-ecs",
+  "executionRoleArn": "arn:aws:iam::976869938811:role/signedpdf-ecs-execution",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
@@ -28,7 +28,7 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/Signed-PDF",
+          "awslogs-group": "/ecs/SignedPDF-API-PROD",
           "awslogs-region": "us-west-2",
           "awslogs-stream-prefix": "ecs"
         }
