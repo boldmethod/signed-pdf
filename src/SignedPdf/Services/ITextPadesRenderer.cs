@@ -93,7 +93,7 @@ public sealed class ITextPadesRenderer : IPadesRenderer
         {
             var stampReader = new PdfReader(new MemoryStream(bodyPdfBytes));
             var stampWriter = new PdfWriter(unsignedStream);
-            using var stampDoc = new PdfADocument(stampReader, stampWriter, new StampingProperties());
+            var stampDoc = new PdfADocument(stampReader, stampWriter, new StampingProperties());
 
             foreach (var attachment in request.Attachments)
             {
@@ -101,7 +101,11 @@ public sealed class ITextPadesRenderer : IPadesRenderer
             }
 
             _blockRenderer.AppendAndRender(stampDoc, request.VisibleSignatureBlock);
-            // stampDoc closes via using -> writes to unsignedStream
+
+            // Explicit Close() flushes the visible-block Canvas content into
+            // unsignedStream BEFORE we read the byte array. A `using`
+            // declaration would defer this until end-of-block, AFTER ToArray.
+            stampDoc.Close();
             unsignedPdfBytes = unsignedStream.ToArray();
         }
 

@@ -36,13 +36,26 @@ public sealed class VisibleSignatureBlockRenderer(FontResources fonts)
     /// Append a fresh blank page to <paramref name="pdfDoc"/> and render
     /// the visible signature block on it.
     /// </summary>
+    /// <remarks>
+    /// Uses iText's <see cref="Canvas"/> primitive (page-bound) rather than
+    /// <see cref="Document"/> (multi-page flowing layout) so that all
+    /// content lands on the appended page exclusively. <see cref="Document"/>
+    /// would walk the existing pages and try to flow text into whatever
+    /// space it found first.
+    /// </remarks>
     public void AppendAndRender(PdfDocument pdfDoc, PdfVisibleSignatureBlock block)
     {
-        pdfDoc.AddNewPage(PageSize.LETTER);
+        var page = pdfDoc.AddNewPage(PageSize.LETTER);
+        var pageSize = page.GetPageSize();
 
-        var pageNumber = pdfDoc.GetNumberOfPages();
-        using var doc = new Document(pdfDoc, PageSize.LETTER);
-        doc.SetMargins(72, 72, 72, 72); // 1 inch all around
+        // 1" margins all around → 6.5" × 9" content box.
+        var contentBox = new Rectangle(
+            72f,
+            72f,
+            pageSize.GetWidth() - 144f,
+            pageSize.GetHeight() - 144f);
+
+        using var canvas = new Canvas(page, contentBox);
 
         // Fresh per-request PdfFont instances bound to the active document.
         var requestFonts = _fonts.CreateFonts();
@@ -51,18 +64,17 @@ public sealed class VisibleSignatureBlockRenderer(FontResources fonts)
         var sansItalic = requestFonts.SansItalic;
         var mono = requestFonts.Mono;
 
-        // Default font on the Document so any layout pass that needs to
-        // resolve a font (e.g. table column-width calculation) has one
-        // available even before we explicitly set fonts on paragraphs.
-        doc.SetFont(sans);
+        // Default font so layout passes that need to resolve a font (e.g.
+        // table column-width calculation) have one available before we
+        // explicitly set fonts on individual paragraphs.
+        canvas.SetFont(sans);
 
         // Title
-        doc.Add(new Paragraph("Electronic Signature")
+        canvas.Add(new Paragraph("Electronic Signature")
             .SetFont(sansBold)
             .SetFontSize(24)
             .SetTextAlignment(TextAlignment.CENTER)
             .SetFontColor(ColorConstants.BLACK)
-            .SetPageNumber(pageNumber)
             .SetMarginBottom(6));
 
         // Horizontal rule via a 1-row borderless table with a top border.
@@ -72,7 +84,7 @@ public sealed class VisibleSignatureBlockRenderer(FontResources fonts)
             .SetBorderTop(new SolidBorder(ColorConstants.BLACK, 1f))
             .SetHeight(1)
             .Add(new Paragraph(" ").SetMargin(0).SetFontSize(1)));
-        doc.Add(rule);
+        canvas.Add(rule);
 
         // Metadata: 2-column borderless table
         var meta = new Table(UnitValue.CreatePercentArray([60f, 40f])).UseAllAvailableWidth();
@@ -118,47 +130,47 @@ public sealed class VisibleSignatureBlockRenderer(FontResources fonts)
             .SetFontColor(ColorConstants.BLACK));
         meta.AddCell(dateCell);
 
-        doc.Add(meta);
+        canvas.Add(meta);
 
         // Intent
-        doc.Add(new Paragraph("Intent of Signature")
+        canvas.Add(new Paragraph("Intent of Signature")
             .SetFont(sansBold)
             .SetFontSize(12)
             .SetMarginTop(12)
             .SetMarginBottom(2)
             .SetFontColor(ColorConstants.BLACK));
-        doc.Add(new Paragraph(block.IntentText)
+        canvas.Add(new Paragraph(block.IntentText)
             .SetFont(sans)
             .SetFontSize(11)
             .SetMarginBottom(12)
             .SetFontColor(ColorConstants.BLACK));
 
         // Attestation
-        doc.Add(new Paragraph("Attestation")
+        canvas.Add(new Paragraph("Attestation")
             .SetFont(sansBold)
             .SetFontSize(12)
             .SetMarginBottom(2)
             .SetFontColor(ColorConstants.BLACK));
-        doc.Add(new Paragraph(block.AttestationText)
+        canvas.Add(new Paragraph(block.AttestationText)
             .SetFont(sans)
             .SetFontSize(11)
             .SetMarginBottom(24)
             .SetFontColor(ColorConstants.BLACK));
 
         // Key fingerprint
-        doc.Add(new Paragraph("Public Key Fingerprint")
+        canvas.Add(new Paragraph("Public Key Fingerprint")
             .SetFont(sansBold)
             .SetFontSize(10)
             .SetMarginBottom(2)
             .SetFontColor(ColorConstants.BLACK));
-        doc.Add(new Paragraph(block.KeyFingerprint)
+        canvas.Add(new Paragraph(block.KeyFingerprint)
             .SetFont(mono)
             .SetFontSize(9)
             .SetMarginBottom(36)
             .SetFontColor(ColorConstants.BLACK));
 
         // Footer
-        doc.Add(new Paragraph(
+        canvas.Add(new Paragraph(
                 "This document is signed with PAdES-B-B and can be verified offline " +
                 "in Adobe Acrobat Reader or any PAdES-compatible viewer.")
             .SetFont(sansItalic)
