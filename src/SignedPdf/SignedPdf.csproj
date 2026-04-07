@@ -12,9 +12,26 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="itext" Version="9.*" />
     <PackageReference Include="itext.bouncy-castle-adapter" Version="9.*" />
     <PackageReference Include="AWSSDK.S3" Version="3.*" />
   </ItemGroup>
+
+  <!--
+    Build-time OpenAPI document generation (opt-in).
+    Enabled by setting -p:GenerateSpec=true on the dotnet build invocation.
+    When enabled, Microsoft.Extensions.ApiDescription.Server bootstraps the
+    host after build, writes SignedPdf.json next to the DLL, and the
+    tools/openapi/generate.sh wrapper normalizes it into docs/openapi/.
+  -->
+  <PropertyGroup Condition="'$(GenerateSpec)' == 'true'">
+    <OpenApiGenerateDocuments>true</OpenApiGenerateDocuments>
+    <OpenApiGenerateDocumentsOnBuild>true</OpenApiGenerateDocumentsOnBuild>
+    <OpenApiDocumentsDirectory>$(MSBuildProjectDirectory)/bin/openapi</OpenApiDocumentsDirectory>
+  </PropertyGroup>
 
 </Project>

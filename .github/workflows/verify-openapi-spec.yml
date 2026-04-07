@@ -1,0 +1,74 @@
+name: Verify OpenAPI Spec
+
+on:
+  pull_request:
+    paths:
+      - "src/SignedPdf/**"
+      - "tools/openapi/**"
+      - "docs/openapi/**"
+      - ".github/workflows/verify-openapi-spec.yml"
+  push:
+    branches:
+      - main
+      - development
+    paths:
+      - "src/SignedPdf/**"
+      - "tools/openapi/**"
+      - "docs/openapi/**"
+      - ".github/workflows/verify-openapi-spec.yml"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+
+      - name: Generate OpenAPI spec
+        run: bash tools/openapi/generate.sh
+
+      - name: Verify committed spec is up to date
+        run: |
+          git add -N docs/openapi/signed-pdf.json
+          if ! git diff --exit-code -- docs/openapi/signed-pdf.json; then
+            echo ""
+            echo "::error::docs/openapi/signed-pdf.json is out of date."
+            echo "Run \`bash tools/openapi/generate.sh\` locally and commit the result."
+            exit 1
+          fi
+          echo "docs/openapi/signed-pdf.json is up to date."
+
+      - name: Check for breaking OpenAPI changes
+        run: |
+          # Install oasdiff
+          go install github.com/oasdiff/oasdiff@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+
+          # Resolve the base ref. For pull_request events use the PR target;
+          # for push events fall back to development (the default branch).
+          BASE_REF="${{ github.event.pull_request.base.ref || 'development' }}"
+
+          if ! git show "origin/${BASE_REF}:docs/openapi/signed-pdf.json" > /tmp/base-spec.json 2>/dev/null; then
+            echo "No base spec found on ${BASE_REF} — skipping breaking change check."
+            exit 0
+          fi
+
+          if ! oasdiff breaking /tmp/base-spec.json docs/openapi/signed-pdf.json; then
+            echo ""
+            echo "::error::Breaking changes detected in docs/openapi/signed-pdf.json."
+            echo "If this is intentional, add the 'breaking-api-change' label to the PR and"
+            echo "merge with administrator override."
+            exit 1
+          fi
+          echo "No breaking changes detected."
