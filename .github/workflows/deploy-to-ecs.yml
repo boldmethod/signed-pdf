@@ -51,6 +51,11 @@ jobs:
 
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA
 
+          if [[ $GITHUB_REF == 'refs/heads/main' ]]; then
+            docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          fi
+
   deploy:
     needs: publish
     runs-on: ubuntu-24.04-arm
