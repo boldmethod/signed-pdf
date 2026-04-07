@@ -21,11 +21,19 @@ namespace SignedPdf.Configuration;
 /// Lifetime of presigned download URLs generated for consumers. Read from
 /// the <c>PRESIGNED_URL_TTL_MINUTES</c> key (in minutes); defaults to 60.
 /// </param>
+/// <param name="ServiceToken">
+/// Shared secret required on every request to the
+/// <c>/api/render-signed/*</c> endpoints (sent in the <c>X-Service-Token</c>
+/// header). Read from the <c>PDF_API_SERVICE_TOKEN</c> key. The legacy
+/// <c>/api/sign</c> overlay endpoint, <c>/health</c>, and <c>/</c> are
+/// not protected by this token.
+/// </param>
 public sealed record ServiceConfiguration(
     string AwsRegion,
     string S3Bucket,
     string S3KeyPrefix,
-    TimeSpan PresignedUrlTtl)
+    TimeSpan PresignedUrlTtl,
+    string ServiceToken)
 {
     /// <summary>
     /// Build a <see cref="ServiceConfiguration"/> from the supplied
@@ -59,6 +67,10 @@ public sealed record ServiceConfiguration(
         if (!int.TryParse(ttlRaw, out var ttlMinutes) || ttlMinutes <= 0)
             throw new InvalidOperationException("PRESIGNED_URL_TTL_MINUTES must be a positive integer.");
 
-        return new ServiceConfiguration(region, bucket, prefix, TimeSpan.FromMinutes(ttlMinutes));
+        var serviceToken = config["PDF_API_SERVICE_TOKEN"]
+            ?? Environment.GetEnvironmentVariable("PDF_API_SERVICE_TOKEN")
+            ?? throw new InvalidOperationException("PDF_API_SERVICE_TOKEN is not configured.");
+
+        return new ServiceConfiguration(region, bucket, prefix, TimeSpan.FromMinutes(ttlMinutes), serviceToken);
     }
 }

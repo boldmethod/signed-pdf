@@ -1,6 +1,16 @@
 {
   "components": {
     "schemas": {
+      "AfRelationship": {
+        "enum": [
+          "Source",
+          "Data",
+          "Alternative",
+          "Supplement",
+          "Unspecified",
+          null
+        ]
+      },
       "ErrorResponse": {
         "description": "Standard error envelope returned by the signing endpoint when a request\nfails validation or an upstream dependency errors. The shape is\nintentionally minimal: a single human-readable string ErrorResponse.Error field.",
         "properties": {
@@ -21,6 +31,230 @@
           "Text",
           "DateStamp"
         ]
+      },
+      "PdfAttachment": {
+        "description": "A file embedded in the PDF as a PDF/A-3 associated file. The file\ncontent is base64-encoded so the entire signing payload can travel\nover JSON without multipart bodies.",
+        "properties": {
+          "contentBase64": {
+            "description": "Base64-encoded file contents.",
+            "type": "string"
+          },
+          "contentType": {
+            "description": "MIME type, e.g. `application/json`.",
+            "type": "string"
+          },
+          "filename": {
+            "description": "Display name of the file as shown in PDF viewers.",
+            "type": "string"
+          },
+          "relationship": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AfRelationship",
+                "description": "PDF/A-3 associated-file relationship. Defaults to\nAfRelationship.Source when omitted."
+              }
+            ]
+          }
+        },
+        "required": [
+          "filename",
+          "contentType",
+          "contentBase64"
+        ],
+        "type": "object"
+      },
+      "PdfRenderFinalizeRequest": {
+        "description": "Request body for the `POST /api/render-signed/finalize` endpoint.\nInjects the externally-computed CMS signature into the prepared PDF's\nreserved placeholder and returns the final PAdES-signed PDF/A-3 document.",
+        "properties": {
+          "algorithm": {
+            "description": "Signature algorithm identifier. Currently only\n`\"ecdsa.p256.sha256\"` is supported.",
+            "type": "string"
+          },
+          "certificatePem": {
+            "description": "PEM-encoded X.509 certificate of the signer. Must be the same\ncertificate used during prepare. Re-sent here so the finalize\nendpoint is fully stateless.",
+            "type": "string"
+          },
+          "preparedPdfBase64": {
+            "description": "The prepared PDF blob as returned by\n`POST /api/render-signed/prepare`. Must be passed back unchanged.",
+            "type": "string"
+          },
+          "signatureBytes": {
+            "description": "Base64-encoded ECDSA signature over the\n`digestToSignBase64` returned by prepare.",
+            "type": "string"
+          },
+          "signatureFieldName": {
+            "description": "Signature field name to fill (must match the value used during prepare).",
+            "type": "string"
+          },
+          "timestampToken": {
+            "description": "Optional base64-encoded RFC 3161 timestamp token computed over\n`SHA-256(signatureBytes)`. When present, the timestamp is\nembedded as an unsigned attribute in the CMS signer info,\nenabling Adobe Reader to display the trusted timestamp in the\nsignature panel.",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "preparedPdfBase64",
+          "signatureFieldName",
+          "certificatePem",
+          "signatureBytes",
+          "algorithm"
+        ],
+        "type": "object"
+      },
+      "PdfRenderPrepareRequest": {
+        "description": "Request body for the `POST /api/render-signed/prepare` endpoint.\nCarries everything needed to render an HTML document into a PDF/A-3B\narchive, embed associated files, render a visible signature block on\nan appended last page, and reserve a fixed-size signature placeholder\nsuitable for offline ECDSA signing.",
+        "properties": {
+          "attachments": {
+            "description": "Files to embed in the PDF as PDF/A-3 associated files. Typically\nthe canonical JSON payload that was cryptographically signed,\nallowing offline verification of the document's content against\nthe embedded JSON.",
+            "items": {
+              "$ref": "#/components/schemas/PdfAttachment"
+            },
+            "type": "array"
+          },
+          "certificatePem": {
+            "description": "PEM-encoded X.509 certificate of the signer. Required at prepare\ntime because the CMS signed-attributes structure (whose digest the\ncaller signs) binds the certificate's issuer and serial number.\nThe same certificate must be re-sent in the finalize request.",
+            "type": "string"
+          },
+          "hashAlgorithm": {
+            "description": "Optional hash algorithm identifier. Currently only `\"SHA-256\"`\nis supported. Defaults to `\"SHA-256\"`.",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "html": {
+            "description": "HTML document body to render. The HTML is converted to PDF/A-3B\nusing iText pdfHTML. Standard semantic HTML and inline CSS are\nsupported. JavaScript and external network resources are ignored.",
+            "type": "string"
+          },
+          "signatureFieldName": {
+            "description": "Optional name of the signature field in the resulting PDF.\nDefaults to `\"Signature1\"`.",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "signatureFieldSize": {
+            "description": "Optional size in bytes of the reserved signature placeholder.\nDefaults to `16384`, which accommodates a P-256 ECDSA\nsignature plus an X.509 certificate plus an RFC 3161 timestamp\ntoken plus DER overhead. Increase if finalize fails with\n\"signature container too large\".",
+            "format": "int32",
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ]
+          },
+          "visibleSignatureBlock": {
+            "$ref": "#/components/schemas/PdfVisibleSignatureBlock",
+            "description": "Metadata for the visible signature block rendered on a new page\nappended to the document."
+          }
+        },
+        "required": [
+          "html",
+          "certificatePem",
+          "attachments",
+          "visibleSignatureBlock"
+        ],
+        "type": "object"
+      },
+      "PdfRenderPrepareResponse": {
+        "description": "Successful response from `POST /api/render-signed/prepare`.\nContains the prepared PDF (with a reserved signature placeholder)\nand the digest the caller must ECDSA-sign before calling finalize.",
+        "properties": {
+          "byteRange": {
+            "description": "The four `/ByteRange` integers from the prepared PDF\n(`[offset1, length1, offset2, length2]`). Returned for\ndiagnostic and verification purposes only \u2014 the caller does not\nneed them for finalize.",
+            "items": {
+              "format": "int64",
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "type": "array"
+          },
+          "byteRangeDigestBase64": {
+            "description": "Base64-encoded SHA-256 digest of the bytes covered by\nIReadOnlyList&lt;long&gt; PdfRenderPrepareResponse.ByteRange. Returned for diagnostic purposes only.\nThis is NOT the value the caller signs (see\nstring PdfRenderPrepareResponse.DigestToSignBase64).",
+            "type": "string"
+          },
+          "digestToSignBase64": {
+            "description": "Base64-encoded SHA-256 digest of the DER-encoded CMS signed\nattributes. The caller signs <em>this</em> with ECDSA, not the\nPDF byte range directly. The signed attributes contain the\nbyte-range digest as their `messageDigest` attribute, so\nsigning this value transitively binds the PDF content.",
+            "type": "string"
+          },
+          "hashAlgorithm": {
+            "description": "Echoed hash algorithm identifier.",
+            "type": "string"
+          },
+          "preparedPdfBase64": {
+            "description": "The prepared PDF as a base64-encoded byte string. The caller must\npass this back unchanged to `/api/render-signed/finalize`.",
+            "type": "string"
+          },
+          "signatureFieldName": {
+            "description": "Echoed signature field name (defaults to `\"Signature1\"`).\nPass it back to finalize to ensure the right field is filled.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preparedPdfBase64",
+          "digestToSignBase64",
+          "signatureFieldName",
+          "hashAlgorithm",
+          "byteRange",
+          "byteRangeDigestBase64"
+        ],
+        "type": "object"
+      },
+      "PdfVisibleSignatureBlock": {
+        "description": "Metadata describing the visible signature block rendered on a new\npage appended to the document. All fields except\nstring? PdfVisibleSignatureBlock.CertificateNumber are required.",
+        "properties": {
+          "attestationText": {
+            "description": "Free-form attestation paragraph describing how the document can be\nverified (e.g., \"This record was electronically signed and can be\nverified in Adobe Acrobat Reader...\").",
+            "type": "string"
+          },
+          "certificateNumber": {
+            "description": "Optional credential or certificate number identifying the signer\n(e.g., FAA airman certificate number).",
+            "example": "CFI-1234567",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "dateTime": {
+            "description": "Local date and time of the signing event with timezone offset.\nRendered for human readability; the cryptographic timestamp\n(when present) is the authoritative time anchor.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "intentText": {
+            "description": "Free-form intent statement displayed to the signer at signing\ntime and rendered into the visible block on the PDF.",
+            "type": "string"
+          },
+          "keyFingerprint": {
+            "description": "Hex-encoded fingerprint of the signing public key. Rendered in\nmonospaced type so a verifier can compare it character by character\nagainst an external trust store.",
+            "type": "string"
+          },
+          "signerName": {
+            "description": "Full legal name of the signer.",
+            "example": "Jane Doe",
+            "type": "string"
+          },
+          "signerRole": {
+            "description": "Role or title of the signer in the signing context.",
+            "example": "Flight Instructor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signerName",
+          "signerRole",
+          "dateTime",
+          "intentText",
+          "keyFingerprint",
+          "attestationText"
+        ],
+        "type": "object"
       },
       "ProblemDetails": {
         "properties": {
@@ -208,7 +442,7 @@
   "info": {
     "title": "SignedPdf | v1",
     "version": "1.0.0",
-    "x-spec-hash": "sha256:1282e1c79253d885d1552c4dbb32f075bbc340c594678d3492ef48617de5d4ed"
+    "x-spec-hash": "sha256:0d9f15462e4877fe4378f105808fcda674658abef0c5c5e0ffa36a1da00da6ce"
   },
   "openapi": "3.1.1",
   "paths": {
@@ -224,6 +458,125 @@
         "summary": "Service banner.",
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/api/render-signed/finalize": {
+      "post": {
+        "description": "Step 2 of 2 in the stateless deferred-signing protocol. Accepts the prepared PDF blob from /prepare along with the externally-computed ECDSA signature bytes, the signer's X.509 certificate, and an optional RFC 3161 timestamp token. Builds the CMS SignedData via iText's PdfPKCS7, injects it into the reserved placeholder, and returns the final PAdES-B-B PDF/A-3 document as application/pdf bytes for the caller to archive.",
+        "operationId": "RenderSignedFinalize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PdfRenderFinalizeRequest"
+              }
+            }
+          },
+          "description": "Cancellation token.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Inject the externally-computed CMS signature into the prepared PDF\nand return the final PAdES-signed PDF/A-3 bytes.",
+        "tags": [
+          "Render Signed"
+        ]
+      }
+    },
+    "/api/render-signed/prepare": {
+      "post": {
+        "description": "Step 1 of 2 in the stateless deferred-signing protocol. Renders the supplied HTML to PDF/A-3B, embeds attachments as PDF/A-3 associated files, renders a visible signature block on an appended last page, reserves a fixed-size signature placeholder via iText's PdfSigner, and returns the prepared PDF (base64) plus the SHA-256 digest of the CMS signed attributes that the caller must ECDSA-sign with their private key. The service holds NO state between this call and finalize.",
+        "operationId": "RenderSignedPrepare",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PdfRenderPrepareRequest"
+              }
+            }
+          },
+          "description": "Cancellation token.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PdfRenderPrepareResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Render HTML to PDF/A-3B, embed attachments, render the visible\nsignature block, reserve a signature placeholder, and return the\ndigest the caller must ECDSA-sign.",
+        "tags": [
+          "Render Signed"
         ]
       }
     },
@@ -297,6 +650,9 @@
     },
     {
       "name": "Signing"
+    },
+    {
+      "name": "Render Signed"
     }
   ]
 }

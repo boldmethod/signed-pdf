@@ -32,6 +32,7 @@ export AWS_REGION="us-west-2"
 export S3_BUCKET="openapi-generation-placeholder"
 export S3_KEY_PREFIX="openapi/"
 export PRESIGNED_URL_TTL_MINUTES="60"
+export PDF_API_SERVICE_TOKEN="openapi-generation-placeholder"
 
 echo "Building SignedPdf with -p:GenerateSpec=true..."
 dotnet build "$PROJECT" -c Release -p:GenerateSpec=true --nologo -v quiet

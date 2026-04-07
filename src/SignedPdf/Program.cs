@@ -1,17 +1,34 @@
 using System.Text.Json.Serialization;
 using Amazon;
 using Amazon.S3;
+using iText.Bouncycastle;
+using iText.Bouncycastleconnector;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using SignedPdf.Configuration;
+using SignedPdf.Endpoints;
+using SignedPdf.Middleware;
 using SignedPdf.Models;
 using SignedPdf.Services;
+
+// iText 9 requires the BouncyCastle factory to be registered before any
+// crypto operation. Doing it once here means every request through the
+// PAdES renderer can rely on it being available.
+BouncyCastleFactoryCreator.SetFactory(new BouncyCastleFactory());
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
+
+// Bump request body cap to 50 MB. /api/render-signed/finalize carries
+// preparedPdfBase64 which is ~33% larger than the binary PDF, so 50 MB
+// supports binary PDFs up to ~35 MB comfortably.
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = 50L * 1024L * 1024L;
 });
 
 builder.Services.AddOpenApi();
@@ -24,7 +41,18 @@ builder.Services.AddSingleton<IAmazonS3>(_ =>
 builder.Services.AddSingleton<IS3Storage, S3Storage>();
 builder.Services.AddSingleton<IPdfRenderer, ITextRenderer>();
 
+// PAdES rendering services. FontResources loads the bundled Liberation
+// TTFs once at startup; the renderer composes everything per request.
+builder.Services.AddSingleton<FontResources>();
+builder.Services.AddSingleton<VisibleSignatureBlockRenderer>();
+builder.Services.AddSingleton<PadesCmsBuilder>();
+builder.Services.AddSingleton<IPadesRenderer, ITextPadesRenderer>();
+
 var app = builder.Build();
+
+// Service-token auth for /api/render-signed/* (registered before any
+// endpoint mapping so it sees every protected request).
+app.UseMiddleware<ServiceTokenAuthMiddleware>();
 
 // Expose the OpenAPI document in every environment. The repo is open source
 // and the service has no sensitive surface — discoverability is a feature.
@@ -56,6 +84,38 @@ app.MapPost("/api/sign", SignPdfEndpoint.HandleAsync)
     .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status500InternalServerError)
     .ProducesProblem(StatusCodes.Status502BadGateway);
+
+app.MapPost("/api/render-signed/prepare", RenderSignedEndpoint.PrepareAsync)
+    .WithName("RenderSignedPrepare")
+    .WithSummary("Prepare a PAdES-signed PDF/A-3 by reserving a signature placeholder and returning the digest to sign.")
+    .WithDescription(
+        "Step 1 of 2 in the stateless deferred-signing protocol. Renders the supplied HTML to PDF/A-3B, " +
+        "embeds attachments as PDF/A-3 associated files, renders a visible signature block on an appended " +
+        "last page, reserves a fixed-size signature placeholder via iText's PdfSigner, and returns the " +
+        "prepared PDF (base64) plus the SHA-256 digest of the CMS signed attributes that the caller must " +
+        "ECDSA-sign with their private key. The service holds NO state between this call and finalize.")
+    .WithTags("Render Signed")
+    .Accepts<PdfRenderPrepareRequest>("application/json")
+    .Produces<PdfRenderPrepareResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status401Unauthorized)
+    .ProducesProblem(StatusCodes.Status500InternalServerError);
+
+app.MapPost("/api/render-signed/finalize", RenderSignedEndpoint.FinalizeAsync)
+    .WithName("RenderSignedFinalize")
+    .WithSummary("Inject an externally-computed CMS signature into a prepared PDF and return the final PAdES-signed PDF/A-3.")
+    .WithDescription(
+        "Step 2 of 2 in the stateless deferred-signing protocol. Accepts the prepared PDF blob from " +
+        "/prepare along with the externally-computed ECDSA signature bytes, the signer's X.509 certificate, " +
+        "and an optional RFC 3161 timestamp token. Builds the CMS SignedData via iText's PdfPKCS7, injects " +
+        "it into the reserved placeholder, and returns the final PAdES-B-B PDF/A-3 document as " +
+        "application/pdf bytes for the caller to archive.")
+    .WithTags("Render Signed")
+    .Accepts<PdfRenderFinalizeRequest>("application/json")
+    .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status401Unauthorized)
+    .ProducesProblem(StatusCodes.Status500InternalServerError);
 
 app.Run();
 

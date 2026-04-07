@@ -8,6 +8,9 @@
     <ContainerPort>8080</ContainerPort>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);1591</NoWarn>
+    <!-- Disable ApiDescription.Server's default build-time hook by default;
+         only enabled by the GenerateSpec property group below. -->
+    <OpenApiGenerateDocumentsOnBuild>false</OpenApiGenerateDocumentsOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,7 +21,18 @@
     </PackageReference>
     <PackageReference Include="itext" Version="9.*" />
     <PackageReference Include="itext.bouncy-castle-adapter" Version="9.*" />
+    <PackageReference Include="itext.pdfhtml" Version="6.*" />
     <PackageReference Include="AWSSDK.S3" Version="3.*" />
+  </ItemGroup>
+
+  <!--
+    Bundled resources for PAdES PDF/A-3 rendering:
+      Resources/Profiles/sRGB2014.icc - sRGB ICC profile for PDF/A output intent
+      Resources/Fonts/Liberation*.ttf - SIL OFL fonts embedded in PDF/A documents
+    All copied alongside the binary so they're available at AppContext.BaseDirectory.
+  -->
+  <ItemGroup>
+    <None Include="Resources/**/*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--
