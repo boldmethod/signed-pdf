@@ -7,8 +7,14 @@ using SignedPdf.Models;
 
 namespace SignedPdf.Services;
 
+/// <summary>
+/// <see cref="IPdfRenderer"/> implementation backed by iText 9. Uses the
+/// iText kernel <c>PdfCanvas</c> API to composite signature images and text
+/// directly onto the pages of the supplied base PDF.
+/// </summary>
 public sealed class ITextRenderer : IPdfRenderer
 {
+    /// <inheritdoc />
     public byte[] RenderOverlays(byte[] basePdf, IReadOnlyList<SignatureOverlay> overlays)
     {
         using var inputStream = new MemoryStream(basePdf);

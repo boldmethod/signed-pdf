@@ -4,8 +4,15 @@ using SignedPdf.Configuration;
 
 namespace SignedPdf.Services;
 
+/// <summary>
+/// <see cref="IS3Storage"/> implementation backed by AWS S3. Uploads rendered
+/// PDFs via <see cref="IAmazonS3.PutObjectAsync"/> under the bucket and key
+/// prefix configured in <see cref="ServiceConfiguration"/>, and returns
+/// time-limited presigned <c>GET</c> URLs for consumer retrieval.
+/// </summary>
 public sealed class S3Storage(IAmazonS3 s3Client, ServiceConfiguration config) : IS3Storage
 {
+    /// <inheritdoc />
     public async Task<UploadResult> UploadAndPresignAsync(byte[] pdfBytes, CancellationToken ct)
     {
         var key = $"{config.S3KeyPrefix}{Guid.NewGuid()}.pdf";
