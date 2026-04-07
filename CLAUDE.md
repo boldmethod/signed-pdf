@@ -68,6 +68,9 @@ tools/openapi/            # generate.sh — build-time spec generator wrapper
 - `/health`, `/`, `/api/sign`, and `/openapi/v1.json` are unauthenticated.
 - `/api/render-signed/prepare` and `/api/render-signed/finalize` require the `X-Service-Token` header. The middleware uses constant-time comparison and returns `401 Unauthorized` with an `ErrorResponse` body on missing/mismatched tokens.
 
+## ECS env file convention
+The `infrastructure/ecs/signed-pdf.env.{dev,prod}.json` files are used by both deploy workflows. Keys whose value is a string starting with `arn:aws:secretsmanager:` are emitted into the ECS task definition's `secrets:` array (resolved by ECS at task start via the execution role) instead of the plain `environment:` array. Everything else lands as a regular env var. This is how `PDF_API_SERVICE_TOKEN` is wired to AWS Secrets Manager. The execution role needs `secretsmanager:GetSecretValue` on the referenced secret ARNs.
+
 ## Build & Run
 ```bash
 dotnet restore src/SignedPdf/SignedPdf.csproj

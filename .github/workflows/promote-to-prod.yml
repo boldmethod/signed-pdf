@@ -70,17 +70,26 @@ jobs:
           echo "Image: $IMAGE"
           echo "Env file: $ENV_FILE"
 
+          # Split env file entries: keys whose value starts with
+          # "arn:aws:secretsmanager:" are emitted into the container's
+          # `secrets:` array (resolved by ECS at task start). Everything
+          # else becomes a normal `environment:` entry. LOG_GROUP is
+          # extracted separately into the awslogs config.
           jq --arg IMAGE "$IMAGE" \
              --arg SHA "${{ inputs.commit_sha }}" \
              --arg IMG "$IMAGE" \
              --slurpfile envfile "$ENV_FILE" \
              '
               ($envfile[0].LOG_GROUP) as $LOG_GROUP |
-              ($envfile[0] | to_entries | map(select(.key != "LOG_GROUP"))
-                | . + [{"key":"APP_GIT_SHA","value":$SHA},{"key":"APP_IMAGE_REF","value":$IMG}]
-                | map({name:.key, value:.value})) as $ENV |
+              ($envfile[0] | to_entries | map(select(.key != "LOG_GROUP"))) as $ALL |
+              ($ALL | map(select(.value | type == "string" and startswith("arn:aws:secretsmanager:")))
+                    | map({name:.key, valueFrom:.value})) as $SECRETS |
+              ($ALL | map(select((.value | type == "string" and startswith("arn:aws:secretsmanager:")) | not))
+                    + [{"key":"APP_GIT_SHA","value":$SHA},{"key":"APP_IMAGE_REF","value":$IMG}]
+                    | map({name:.key, value:.value})) as $ENV |
               .containerDefinitions[0].image = $IMAGE
               | .containerDefinitions[0].environment = $ENV
+              | .containerDefinitions[0].secrets = $SECRETS
               | .containerDefinitions[0].logConfiguration.options."awslogs-group" = $LOG_GROUP
              ' infrastructure/ecs/signed-pdf.taskdef.json > new-task-def.json
 
